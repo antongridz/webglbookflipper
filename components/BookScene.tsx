@@ -1,6 +1,7 @@
 "use client"
 import type React from "react"
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
+import { Settings } from "lucide-react"
 
 // Types for configuration
 interface BookConfig {
@@ -25,9 +26,21 @@ interface BookConfig {
 const BookScene: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null)
   const guiRef = useRef<any | null>(null)
+  const [isConfigVisible, setIsConfigVisible] = useState(false)
 
   // Mouse state for tilt effect
   const mouseRef = useRef({ x: 0, y: 0 })
+
+  // Toggle GUI visibility when state changes
+  useEffect(() => {
+    if (guiRef.current) {
+      if (isConfigVisible) {
+        guiRef.current.show()
+      } else {
+        guiRef.current.hide()
+      }
+    }
+  }, [isConfigVisible])
 
   useEffect(() => {
     if (!mountRef.current) return
@@ -123,8 +136,8 @@ const BookScene: React.FC = () => {
 
       dirLight.shadow.mapSize.width = 1024
       dirLight.shadow.mapSize.height = 1024
-      dirLight.shadow.bias = -0.0005
-      dirLight.shadow.normalBias = 0.02
+      dirLight.shadow.bias = -0.0001
+      dirLight.shadow.normalBias = 0.005
 
       const d = 8
       dirLight.shadow.camera.left = -d
@@ -236,6 +249,22 @@ const BookScene: React.FC = () => {
           // Geometry shifted so x=0 is the spine
           const geometry = new THREE.PlaneGeometry(config.pageWidth, config.pageHeight, config.pageSegments, 1)
           geometry.translate(config.pageWidth / 2, 0, 0)
+
+          // --- SPINE SHADOW (Vertex Colors) ---
+          // We make vertices near the spine (x=0) darker to simulate depth
+          const position = geometry.attributes.position
+          const colors = new Float32Array(position.count * 3)
+          for (let i = 0; i < position.count; i++) {
+            const x = position.getX(i)
+            const nx = x / config.pageWidth // normalized x (0 to 1)
+            // Darkness curve: very dark at the spine (0), quickly fades to white (1)
+            const shadow = 0.5 + Math.pow(nx, 0.15) * 0.5
+            colors[i * 3] = shadow
+            colors[i * 3 + 1] = shadow
+            colors[i * 3 + 2] = shadow
+          }
+          geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3))
+
           this.basePositionAttribute = geometry.attributes.position.clone()
 
           // Colors
@@ -263,6 +292,7 @@ const BookScene: React.FC = () => {
             roughness: config.roughness,
             metalness: config.metalness,
             side: THREE.FrontSide,
+            vertexColors: true,
             iridescence: config.holographic ? 1.0 : 0.0,
             iridescenceIOR: 1.6,
             iridescenceThicknessRange: [100, 400],
@@ -275,6 +305,7 @@ const BookScene: React.FC = () => {
             roughness: config.roughness + 0.1,
             metalness: config.metalness,
             side: THREE.BackSide,
+            vertexColors: true,
             iridescence: 0,
             clearcoat: 0,
           })
@@ -432,9 +463,13 @@ const BookScene: React.FC = () => {
       // --- GUI ---
       if (!guiRef.current) {
         guiRef.current = new GUI({ title: "Config" })
-        guiRef.current.domElement.style.position = "absolute"
-        guiRef.current.domElement.style.top = "100px"
+        guiRef.current.domElement.style.position = "fixed"
+        guiRef.current.domElement.style.top = "70px"
         guiRef.current.domElement.style.right = "20px"
+        guiRef.current.domElement.style.zIndex = "100"
+        
+        // Hide by default based on initial state
+        guiRef.current.hide()
 
         const folderGeneral = guiRef.current.addFolder("General")
         folderGeneral.add(config, "pageCount", 2, 50, 1).name("Page Count").onFinishChange(initBook)
@@ -620,7 +655,39 @@ const BookScene: React.FC = () => {
     }
   }, [])
 
-  return <div ref={mountRef} className="w-full h-full block" />
+  return (
+    <div className="w-full h-full block relative">
+      <div ref={mountRef} className="w-full h-full" />
+      
+      {/* Settings Toggle Button */}
+      <button 
+        onClick={() => setIsConfigVisible(!isConfigVisible)}
+        style={{
+          position: 'fixed',
+          top: '20px',
+          right: '20px',
+          zIndex: 101,
+          background: 'rgba(255, 255, 255, 0.8)',
+          backdropFilter: 'blur(4px)',
+          border: '1px solid rgba(0,0,0,0.1)',
+          borderRadius: '50%',
+          width: '40px',
+          height: '40px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+          transition: 'all 0.2s ease',
+          color: '#1a1a1a'
+        }}
+        onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 1)'}
+        onMouseLeave={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.8)'}
+      >
+        <Settings size={20} />
+      </button>
+    </div>
+  )
 }
 
 export default BookScene
