@@ -1,0 +1,5 @@
+{
+  "name": "WebGL Book Flipper",
+  "description": "An interactive 3D book portfolio that flips pages on scroll, rendered with Three.js",
+  "requestFramePermissions": []
+}
