@@ -91,7 +91,8 @@ const BookScene: React.FC = () => {
 
       // --- SCENE SETUP ---
       const scene = new THREE.Scene()
-      scene.background = new THREE.Color(envPresets["Studio"].bg)
+      // Background is null to allow transparency and see the text behind
+      scene.background = null
 
       // --- CAMERA ---
       let aspect = window.innerWidth / window.innerHeight
@@ -103,7 +104,7 @@ const BookScene: React.FC = () => {
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
       renderer.setSize(window.innerWidth, window.innerHeight)
       renderer.shadowMap.enabled = true
-      renderer.shadowMap.type = THREE.PCFSoftShadowMap
+      renderer.shadowMap.type = THREE.PCFShadowMap
       renderer.toneMapping = THREE.ACESFilmicToneMapping
       renderer.toneMappingExposure = 1.0
 
@@ -113,23 +114,24 @@ const BookScene: React.FC = () => {
       const pmremGenerator = new THREE.PMREMGenerator(renderer)
       scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture
 
-      const hemiLight = new THREE.HemisphereLight(envPresets["Studio"].light, envPresets["Studio"].ground, 0.5)
+      const hemiLight = new THREE.HemisphereLight(envPresets["Studio"].light, envPresets["Studio"].ground, 0.8)
       scene.add(hemiLight)
 
       const dirLight = new THREE.DirectionalLight(envPresets["Studio"].dir, config.lightIntensity)
       dirLight.position.set(config.lightX, config.lightY, config.lightZ)
       dirLight.castShadow = true
 
-      dirLight.shadow.mapSize.width = 2048
-      dirLight.shadow.mapSize.height = 2048
-      dirLight.shadow.bias = -0.0004
+      dirLight.shadow.mapSize.width = 1024
+      dirLight.shadow.mapSize.height = 1024
+      dirLight.shadow.bias = -0.0005
+      dirLight.shadow.normalBias = 0.02
 
-      const d = 10
+      const d = 8
       dirLight.shadow.camera.left = -d
       dirLight.shadow.camera.right = d
       dirLight.shadow.camera.top = d
       dirLight.shadow.camera.bottom = -d
-      dirLight.shadow.radius = config.shadowRadius
+      dirLight.shadow.radius = 12
 
       scene.add(dirLight)
 
@@ -139,19 +141,16 @@ const BookScene: React.FC = () => {
       spotLight.penumbra = 0.5
       scene.add(spotLight)
 
-      // Background Plane
+      // Background Plane - Now a Shadow Catcher
       const planeGeometry = new THREE.PlaneGeometry(100, 100)
-      const planeMaterial = new THREE.MeshStandardMaterial({
-        color: 0xe0e0e0,
-        roughness: 0.8,
-        metalness: 0.1,
+      const planeMaterial = new THREE.ShadowMaterial({
+        opacity: 0.1 // This makes the shadow visible but the plane itself transparent
       })
       const plane = new THREE.Mesh(planeGeometry, planeMaterial)
       plane.receiveShadow = true
 
-      // ADJUSTMENT: Moved plane much closer to the book (from -3.0 to -0.5)
-      // This brings the shadow closer to the object, preventing the "floating" effect.
-      plane.position.z = -0.5
+      // ADJUSTMENT: Balanced distance for soft but present shadows
+      plane.position.z = -0.7
       scene.add(plane)
 
       // --- SHARED TEXTURE LOADER ---
@@ -386,6 +385,13 @@ const BookScene: React.FC = () => {
 
       // --- BOOK MANAGEMENT ---
       const bookGroup = new THREE.Group()
+      // Initial position: book is at the bottom edge, half visible
+      // Calculate screen height in world units
+      const fov = 30 * (Math.PI / 180) // Convert to radians
+      const screenHeight = 2 * Math.tan(fov / 2) * camera.position.z
+      const halfScreenHeight = screenHeight / 2
+      // Set initial Y position to be exactly at the bottom edge of the screen
+      bookGroup.position.y = -halfScreenHeight
       scene.add(bookGroup)
       let pages: Page[] = []
 
@@ -407,17 +413,11 @@ const BookScene: React.FC = () => {
       const updateEnvironment = () => {
         const preset = envPresets[config.envPreset]
         if (preset) {
-          scene.background = new THREE.Color(preset.bg)
+          // Keep background null for transparency even when changing themes
           hemiLight.color.setHex(preset.light)
           hemiLight.groundColor.setHex(preset.ground)
           dirLight.color.setHex(preset.dir)
-          if (config.envPreset === "Dark") {
-            planeMaterial.color.setHex(0x333333)
-          } else if (config.envPreset === "Cyber") {
-            planeMaterial.color.setHex(0x111122)
-          } else {
-            planeMaterial.color.setHex(0xe0e0e0)
-          }
+          // Background plane is now a ShadowMaterial, so we don't need to change its color
         }
       }
 
@@ -473,25 +473,58 @@ const BookScene: React.FC = () => {
       const animateBook = () => {
         const progress = getScrollProgress()
 
-        // --- CENTER SHIFT LOGIC ---
-        // 0.0 -> 0.1: Opening (Slide left to center spine)
-        // 0.1 -> 0.9: Reading (Stay centered)
-        // 0.9 -> 1.0: Closing (Slide right to center back cover)
+        // Calculate screen height in world units
+        const fov = 30 * (Math.PI / 180) // Convert to radians
+        const screenHeight = 2 * Math.tan(fov / 2) * camera.position.z
+        const halfScreenHeight = screenHeight / 2
 
-        let targetX = 0
+        // --- PHASE DEFINITIONS ---
+        // Phase 1: Book lifting (0.0 -> 0.3) - Book moves up from bottom edge to center (1/2 from top)
+        // Phase 2: Book opening (0.3 -> 0.4) - Book opens at the center position
+        // Phase 3: Page flipping (0.4 -> 0.9) - Pages flip
+        // Phase 4: Book closing (0.9 -> 1.0) - Book closes
 
-        if (progress < 0.1) {
-          // Opening Phase
-          const phase = progress / 0.1
-          // Moves from -Width/2 to 0
-          targetX = (-config.pageWidth / 2) * (1 - phase)
-        } else if (progress > 0.9) {
-          // Closing Phase
-          const phase = (progress - 0.9) / 0.1
-          // Moves from 0 to +Width/2
-          targetX = (config.pageWidth / 2) * phase
+        const liftPhaseEnd = 0.3
+        const openPhaseStart = 0.3
+        const openPhaseEnd = 0.4
+        const flipPhaseStart = 0.4
+        const flipPhaseEnd = 0.9
+        const closePhaseStart = 0.9
+
+        // --- VERTICAL POSITION LOGIC ---
+        // Center of the screen (1/2 height from top) in world units
+        const triggerY = 0 
+        const initialY = -halfScreenHeight
+        
+        let targetY = initialY
+        if (progress < liftPhaseEnd) {
+          // Lifting phase: book moves up to the trigger position (center)
+          const liftProgress = progress / liftPhaseEnd
+          targetY = initialY + (triggerY - initialY) * liftProgress
         } else {
+          // Stay at the trigger position while opening/flipping
+          targetY = triggerY
+        }
+        bookGroup.position.y += (targetY - bookGroup.position.y) * 0.1
+
+        // --- CENTER SHIFT LOGIC (Phase 2: Opening, Phase 4: Closing) ---
+        // Book stays closed during lift phase, then opens, then closes at the end
+        let targetX = -config.pageWidth / 2 // Default: closed position
+
+        if (progress < openPhaseStart) {
+          // Phase 1: Book stays closed during lifting
+          targetX = -config.pageWidth / 2
+        } else if (progress >= openPhaseStart && progress < openPhaseEnd) {
+          // Phase 2: Opening - Book opens from closed to centered
+          const openProgress = (progress - openPhaseStart) / (openPhaseEnd - openPhaseStart)
+          targetX = (-config.pageWidth / 2) * (1 - openProgress)
+        } else if (progress >= openPhaseEnd && progress < closePhaseStart) {
+          // Phase 3: Reading - Book stays centered
           targetX = 0
+        } else {
+          // Phase 4: Closing - Book closes
+          const closeProgress = (progress - closePhaseStart) / (1 - closePhaseStart)
+          targetX = (config.pageWidth / 2) * closeProgress
         }
 
         // Smooth lerp for position X
@@ -508,14 +541,16 @@ const BookScene: React.FC = () => {
         const liftAmount = Math.abs(bookGroup.rotation.x) * 1.5 + Math.abs(bookGroup.rotation.y) * 1.0
         bookGroup.position.z = liftAmount * 0.5
 
-        // Flip Logic
-        // Map progress 0.1 -> 0.9 to flip pages 0 -> N
-        const flipRangeStart = 0.1
-        const flipRangeEnd = 0.9
-        const flipDuration = flipRangeEnd - flipRangeStart
-
-        const rawFlip = (progress - flipRangeStart) / flipDuration
-        const flipProgress = Math.max(0, Math.min(1, rawFlip))
+        // --- FLIP LOGIC (Phase 3: Page Flipping) ---
+        // Pages only flip during the flip phase (after book is opened)
+        let flipProgress = 0
+        if (progress >= flipPhaseStart && progress < flipPhaseEnd) {
+          const flipDuration = flipPhaseEnd - flipPhaseStart
+          const rawFlip = (progress - flipPhaseStart) / flipDuration
+          flipProgress = Math.max(0, Math.min(1, rawFlip))
+        } else if (progress >= flipPhaseEnd) {
+          flipProgress = 1 // All pages flipped
+        }
 
         const pagesToFlip = flipProgress * pages.length
 
@@ -526,11 +561,19 @@ const BookScene: React.FC = () => {
           // 1. Curl
           page.updateCurl(pageState)
 
-          // 2. Z-Index (Stacking)
-          const zStep = 0.005
-          const rightStackZ = -i * zStep
-          const leftStackZ = i * zStep
+          // 2. Z-Index (Stacking) - Improved to prevent gaps
+          // Use minimal spacing - only page thickness, no extra gap
+          const pageThickness = 0.001 // Total thickness per page (0.0005 per side)
+          
+          // Right stack: pages go deeper (negative Z)
+          // Use only page thickness for spacing to ensure tight packing
+          const rightStackZ = -i * pageThickness
+          
+          // Left stack: pages come forward
+          // When flipped, pages stack on left with same tight spacing
+          const leftStackZ = i * pageThickness
 
+          // Smooth interpolation - pages stay tightly packed during flip
           const targetZ = rightStackZ * (1 - pageState) + leftStackZ * pageState
           page.group.position.z = targetZ
         })
@@ -540,6 +583,8 @@ const BookScene: React.FC = () => {
       const animate = () => {
         reqId = requestAnimationFrame(animate)
         animateBook()
+        // Camera stays fixed looking forward, so book moves relative to screen
+        camera.lookAt(0, 0, 0)
         renderer.render(scene, camera)
       }
       animate()

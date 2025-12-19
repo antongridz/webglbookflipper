@@ -60,3 +60,4 @@ webglbookflipper/
 ├── public/             # Статические файлы
 └── package.json        # Зависимости проекта
 ```
+
