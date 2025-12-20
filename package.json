@@ -12,6 +12,7 @@
   "dependencies": {
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
+    "framer-motion": "^12.23.26",
     "lil-gui": "0.21.0",
     "lucide-react": "0.562.0",
     "next": "16.1.0",
