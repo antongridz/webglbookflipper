@@ -21,6 +21,7 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
   const rendererRef = useRef<any>(null)
   const cameraRef = useRef<any>(null)
   const envPresetsRef = useRef<any>(null)
+  const timeRef = useRef(0)
 
   // Loading state tracking
   const loadingRef = useRef({
@@ -95,8 +96,8 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
         "/pages/3.webp",
         "/pages/4.webp",
         "/pages/5.webp",
-        "/pages/6.webp",
-        "/pages/7.webp",
+        "/pages/spread-billboard.png?spread", // Page 2 back (left half) - Billboard spread
+        "/pages/spread-billboard.png?spread", // Page 3 front (right half) - Billboard spread
         "/pages/8.webp",
         "/pages/9.webp",
         "/pages/10.webp",
@@ -109,6 +110,15 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
         "https://workers.paper.design/file-assets/01K7VHW3XKP45M25KKCKB4HQJZ/01KCWBJEFDAW0WNN4RVAHDPAYC.png", // Halftone image (теперь на 17-й странице)
         "/pages/17.webp", // Back Cover (теперь на 18-й странице)
       ]
+      
+      // Spread images: one image across two pages (spread)
+      // To create a spread across pages N and N+1:
+      // 1. Put the image URL with "?spread" marker in position (N*2+1) for back of page N (left half)
+      // 2. Put the same URL with "?spread" marker in position ((N+1)*2) for front of page N+1 (right half)
+      // Example for spread on pages 2 and 3:
+      //   imageUrls[5] = "/spread-image.jpg?spread"  // back of page 2 (left half)
+      //   imageUrls[6] = "/spread-image.jpg?spread"  // front of page 3 (right half)
+      // Or use object format: {url: "/spread-image.jpg", spread: true}
 
       const envPresets = {
         Studio: { bg: 0xeeeeee, light: 0xffffff, ground: 0xffffff, dir: 0xffffff },
@@ -177,11 +187,22 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       const textureLoader = new THREE.TextureLoader()
       textureLoader.crossOrigin = "anonymous"
 
-      const drawLogo = (ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) => {
+      // Load Grain Texture
+      let grainImg: HTMLImageElement | null = null
+      textureLoader.load("/textures/grain.png", (tex) => {
+        grainImg = tex.image as HTMLImageElement
+      })
+
+      const drawLogo = (ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, color = "black") => {
         ctx.save()
+        // Ensure high quality rendering
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = "high"
         ctx.translate(x, y)
         ctx.scale(scale, scale)
-        ctx.fillStyle = "black"
+        ctx.fillStyle = color
+        // Use even-odd fill rule for cleaner rendering
+        ctx.fillRule = "evenodd"
         const p1 = new Path2D("M0 15C0 6.37255 7.06748 0 15.6074 0C24.1472 0 31.2147 6.37255 31.2147 15C31.2147 23.6275 24.1472 30 15.6074 30C7.06748 30 0 23.6275 0 15ZM6.57669 15.098C6.57669 20.2941 10.6994 24.2157 15.6074 24.2157C20.6135 24.2157 24.638 20.1961 24.638 15C24.638 9.80392 20.5153 5.88235 15.6074 5.88235C10.6994 5.88235 6.57669 9.90196 6.57669 15.098Z")
         ctx.fill(p1)
         const p2 = new Path2D("M57.7178 0.784317V19.8039L42.2086 0.784317H36.2209V29.3137H42.4049V10.098L58.1105 29.3137H63.9019V0.784317H57.7178Z")
@@ -236,6 +257,20 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
           data[i + 2] += noise
         }
         ctx.putImageData(imageData, 0, 0)
+        
+        // Add Grain
+        if (grainImg) {
+          ctx.save()
+          ctx.globalAlpha = 0.15
+          ctx.globalCompositeOperation = "overlay"
+          const pattern = ctx.createPattern(grainImg, "repeat")
+          if (pattern) {
+            ctx.fillStyle = pattern
+            ctx.fillRect(0, 0, canvas.width, canvas.height)
+          }
+          ctx.restore()
+        }
+
         ctx.strokeStyle = "rgba(0,0,0,0.05)"
         ctx.lineWidth = 20
         ctx.strokeRect(0, 0, 512, 768)
@@ -250,12 +285,24 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
         meshBack: THREE.Mesh
         basePositionAttribute: any
         halftoneUniforms: any = null
+        frontStickers: any[] = []
+        backStickers: any[] = []
 
         constructor(index: number) {
           this.index = index
           this.group = new THREE.Group()
           this.zOffset = -index * 0.02
           this.group.position.z = this.zOffset
+          
+          // Define stickers for this page
+          if (index === 0) {
+            // No stickers on cover for now, we have logo there
+          } else if (index === 2) {
+            this.frontStickers.push({ type: "ONY", x: 750, y: 50, size: 200 })
+          } else if (index === 5) {
+            this.frontStickers.push({ type: "ONY", x: 100, y: 1300, size: 250 })
+          }
+
           const geometry = new THREE.PlaneGeometry(config.pageWidth, config.pageHeight, config.pageSegments, 1)
           geometry.translate(config.pageWidth / 2, 0, 0)
           const position = geometry.attributes.position
@@ -273,12 +320,42 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
           const palette = ["#2c3e50", "#e74c3c", "#3498db", "#27ae60", "#f1c40f", "#8e44ad"]
           const coverColor = "#1a1a1a"
           const pageColor = palette[index % palette.length]
+          // Helper to get URL and check if it's a spread
+          const getImageInfo = (imgIndex: number) => {
+            const item = imageUrls[imgIndex % imageUrls.length]
+            if (typeof item === 'string') {
+              // Remove spread marker from URL for actual loading
+              const cleanUrl = item.replace(/\?spread.*$/, '').replace(/#spread.*$/, '')
+              return { url: cleanUrl, spread: item.includes('?spread') || item.includes('#spread') }
+            } else if (item && typeof item === 'object' && 'url' in item) {
+              return { url: item.url, spread: item.spread === true }
+            }
+            return { url: item, spread: false }
+          }
+          
           const imgIndexFront = (index * 2) % imageUrls.length
           const imgIndexBack = (index * 2 + 1) % imageUrls.length
-          const frontImgUrl = imageUrls[imgIndexFront]
-          const backImgUrl = imageUrls[imgIndexBack]
+          const frontImgInfo = getImageInfo(imgIndexFront)
+          const backImgInfo = getImageInfo(imgIndexBack)
+          
+          const frontImgUrl = frontImgInfo.url
+          const backImgUrl = backImgInfo.url
+          
+          // Determine spread sides:
+          // - If back is spread: it shows left half of the spread (back of current page)
+          // - If front is spread: it shows right half of the spread (front of current page)
+          const isBackSpread = backImgInfo.spread
+          const isFrontSpread = frontImgInfo.spread
+          
+          // Determine which side of spread to show
+          // For back: always left half (if it's a spread)
+          // For front: always right half (if it's a spread)
+          const backSpreadSide: 'left' | 'right' = 'left'
+          const frontSpreadSide: 'left' | 'right' = 'right'
+          
           const isCover = index === 0
           const isBackCover = index === config.pageCount - 1
+          const isONYPatternPage = index === 4
           const isHalftonePage = index === config.pageCount - 1
           const color = index === 0 || isBackCover ? coverColor : pageColor
 
@@ -350,6 +427,7 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
               )
             }
           }
+          
           const matBack = new THREE.MeshPhysicalMaterial({
             map: backTexPlaceholder,
             roughness: config.roughness + 0.1,
@@ -360,49 +438,365 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
             clearcoat: 0,
           })
 
-          const handleTextureLoad = (tex: THREE.Texture, mat: THREE.MeshPhysicalMaterial, isBack = false) => {
+          const handleTextureLoad = (tex: THREE.Texture, mat: THREE.MeshPhysicalMaterial, isBack = false, stickers: any[] = [], isSpread = false, spreadSide: 'left' | 'right' = 'left', isPatternPage = false, isHalftone = false) => {
+            // Much higher resolution for better quality, especially for logos
+            const scale = stickers.length > 0 ? 4 : 1 // 4x resolution for crisp logos
             const canvas = document.createElement("canvas")
-            canvas.width = 1024
-            canvas.height = 1536
+            canvas.width = 1024 * scale
+            canvas.height = 1536 * scale
             const ctx = canvas.getContext("2d")
             if (!ctx) return
             
+            // Enable highest quality rendering
+            ctx.imageSmoothingEnabled = true
+            ctx.imageSmoothingQuality = "high"
+            
+            // Holo Mask Canvas (same high resolution)
+            const holoCanvas = document.createElement("canvas")
+            holoCanvas.width = 1024 * scale
+            holoCanvas.height = 1536 * scale
+            const holoCtx = holoCanvas.getContext("2d")
+            if (holoCtx) {
+              holoCtx.fillStyle = "black"
+              holoCtx.fillRect(0, 0, holoCanvas.width, holoCanvas.height)
+              holoCtx.imageSmoothingEnabled = true
+              holoCtx.imageSmoothingQuality = "high"
+            }
+
             if (isBack) {
               ctx.translate(canvas.width, 0)
               ctx.scale(-1, 1)
+              if (holoCtx) {
+                holoCtx.translate(canvas.width, 0)
+                holoCtx.scale(-1, 1)
+              }
             }
 
             ctx.fillStyle = "#fff"
             ctx.fillRect(0, 0, canvas.width, canvas.height)
-            const pageAspect = config.pageWidth / config.pageHeight
-            const image = tex.image as any
-            const imgW = image?.width || 1024
-            const imgH = image?.height || 1024
-            const safeH = imgH === 0 ? 1 : imgH
-            const imgAspect = imgW / safeH
-            if (imgAspect > pageAspect) {
-              const drawW = canvas.height * imgAspect
-              ctx.drawImage(image, (canvas.width - drawW) / 2, 0, drawW, canvas.height)
-            } else {
-              const drawH = canvas.width / imgAspect
-              ctx.drawImage(image, 0, (canvas.height - drawH) / 2, canvas.width, drawH)
+            
+            // Draw image first (if not ONY pattern page or if it's back side)
+            if (!(isPatternPage && !isBack)) {
+              // Draw image for normal pages or back side of pattern page
+              const pageAspect = config.pageWidth / config.pageHeight
+              const image = tex.image as any
+              const imgW = image?.width || 1024
+              const imgH = image?.height || 1024
+              const safeH = imgH === 0 ? 1 : imgH
+              const imgAspect = imgW / safeH
+              
+              if (isSpread) {
+                // For spread: draw only half of the image
+                // spreadSide='left' means left half of the spread (back of left page)
+                // spreadSide='right' means right half of the spread (front of right page)
+                //
+                // IMPORTANT: Canvas transformation for back pages happens BEFORE this code
+                // Back pages: translate(width,0) + scale(-1,1) flips the canvas horizontally
+                // This means coordinates are mirrored: x=0 becomes x=width, x=width becomes x=0
+                //
+                // Key insight: When canvas is flipped, we need to think about what we want to SEE,
+                // not what we DRAW. The drawImage coordinates are in the flipped coordinate system.
+                //
+                // For back pages (isBack=true, canvas is flipped):
+                // - To SEE left half of spread: we DRAW right half of image (sourceX = imgW/2)
+                //   Because: right half (imgW/2 to imgW) drawn at x=0 on flipped canvas → appears on left
+                // - To SEE right half of spread: we DRAW left half of image (sourceX = 0)
+                //   Because: left half (0 to imgW/2) drawn at x=0 on flipped canvas → appears on right
+                //
+                // For front pages (isBack=false, canvas is normal):
+                // - To SEE left half of spread: we DRAW left half of image (sourceX = 0)
+                // - To SEE right half of spread: we DRAW right half of image (sourceX = imgW/2)
+                let sourceX: number
+                if (isBack) {
+                  // Back page: canvas is flipped horizontally
+                  // When canvas is flipped: what we draw at x=0 appears at x=width in final image
+                  // So to show LEFT half visually, we need to draw it at the RIGHT side of flipped canvas
+                  // But wait - we're selecting which HALF of the SOURCE image to draw, not where to draw it
+                  // 
+                  // Actually, let's think differently:
+                  // - Canvas flip mirrors everything horizontally
+                  // - If we draw LEFT half of image (0 to imgW/2) at x=0 on flipped canvas → appears on RIGHT
+                  // - If we draw RIGHT half of image (imgW/2 to imgW) at x=0 on flipped canvas → appears on LEFT
+                  //
+                  // So for back pages:
+                  // - spreadSide='left' (want to SEE left) → DRAW right half (imgW/2) so it appears on left
+                  // - spreadSide='right' (want to SEE right) → DRAW left half (0) so it appears on right
+                  //
+                  // BUT: The user reports seeing the same half on both pages, which suggests this logic might be inverted
+                  // Let's try the opposite:
+                  sourceX = spreadSide === 'left' ? 0 : imgW / 2  // INVERTED: try drawing left half for left side
+                } else {
+                  // Front page: canvas is normal
+                  // spreadSide='left' means DRAW left half
+                  // spreadSide='right' means DRAW right half
+                  sourceX = spreadSide === 'left' ? 0 : imgW / 2
+                }
+                
+                const sourceWidth = imgW / 2
+                const sourceHeight = imgH
+                
+                // Calculate destination to fill the page
+                // For spread: align halves to meet in the center
+                // - Left half (back page): align to RIGHT edge visually (closer to center)
+                // - Right half (front page): align to LEFT edge visually (closer to center)
+                // 
+                // IMPORTANT: For back pages, canvas is flipped (translate + scale -1)
+                // On flipped canvas: x=0 appears on RIGHT, x=width appears on LEFT
+                // So to align visually to RIGHT edge: draw at x=0 on flipped canvas
+                // To align visually to LEFT edge: draw at x=width-drawW on flipped canvas
+                if (imgAspect / 2 > pageAspect) {
+                  // Image is wider than page - fit to height
+                  const drawW = canvas.height * (imgAspect / 2)
+                  let drawX: number
+                  if (isBack) {
+                    // Back page (left half): align to RIGHT edge visually
+                    // On flipped canvas: to appear on right, draw at right side of flipped canvas
+                    // Right side of flipped canvas = canvas.width - drawW
+                    drawX = canvas.width - drawW
+                  } else {
+                    // Front page (right half): align to LEFT edge visually
+                    // On normal canvas: draw at x=0 to appear on left
+                    drawX = 0
+                  }
+                  ctx.drawImage(
+                    image,
+                    sourceX, 0, sourceWidth, sourceHeight, // Source rectangle: half of image
+                    drawX, 0, drawW, canvas.height // Destination rectangle: full page
+                  )
+                } else {
+                  // Image is taller - fit to width (fills entire width)
+                  const drawH = canvas.width / (imgAspect / 2)
+                  const drawY = (canvas.height - drawH) / 2
+                  // Image fills entire width, so it's already aligned correctly
+                  ctx.drawImage(
+                    image,
+                    sourceX, 0, sourceWidth, sourceHeight, // Source rectangle: half of image
+                    0, drawY, canvas.width, drawH // Destination rectangle: full page width
+                  )
+                }
+              } else {
+                // Normal single-page image
+                if (imgAspect > pageAspect) {
+                  const drawW = canvas.height * imgAspect
+                  ctx.drawImage(image, (canvas.width - drawW) / 2, 0, drawW, canvas.height)
+                } else {
+                  const drawH = canvas.width / imgAspect
+                  ctx.drawImage(image, 0, (canvas.height - drawH) / 2, canvas.width, drawH)
+                }
+              }
             }
-            const newTex = new THREE.CanvasTexture(canvas)
-            newTex.colorSpace = THREE.SRGBColorSpace
-            mat.map = newTex
+
+            // Draw ONY Pattern for pattern page (front side only)
+            if (isPatternPage && !isBack) {
+              // Draw ONY Pattern with high quality
+              ctx.fillStyle = "#1a1a1a"
+              ctx.fillRect(0, 0, canvas.width, canvas.height)
+              
+              const cols = 4
+              const rows = 8
+              const spacingX = canvas.width / cols
+              const spacingY = canvas.height / rows
+              
+              for (let i = 0; i < cols; i++) {
+                for (let j = 0; j < rows; j++) {
+                  const x = (i * spacingX + spacingX / 2 - (96 * 0.5 * scale) / 2)
+                  const y = (j * spacingY + spacingY / 2 - (30 * 0.5 * scale) / 2)
+                  
+                  // Watermark on page
+                  ctx.save()
+                  ctx.globalAlpha = 0.2
+                  drawLogo(ctx, x, y, 0.5 * scale, "rgba(255,255,255,0.2)")
+                  ctx.restore()
+                  
+                  // Holographic effect on each logo in pattern - clean edges
+                  if (holoCtx) {
+                    holoCtx.save()
+                    holoCtx.fillStyle = "white"
+                    holoCtx.globalCompositeOperation = "source-over"
+                    // No shadow blur - clean sharp edges
+                    drawLogo(holoCtx, x, y, 0.5 * scale, "white")
+                    holoCtx.restore()
+                  }
+                }
+              }
+            }
+
+            // Add Grain FIRST (before logos, so logos cover it cleanly)
+            if (grainImg) {
+              ctx.save()
+              ctx.globalAlpha = stickers.length > 0 ? 0.1 : 0.2
+              ctx.globalCompositeOperation = "overlay"
+              const pattern = ctx.createPattern(grainImg, "repeat")
+              if (pattern) {
+                ctx.fillStyle = pattern
+                ctx.fillRect(0, 0, canvas.width, canvas.height)
+              }
+              ctx.restore()
+            }
+
+            // Draw Stickers AFTER grain (so they cover grain cleanly)
+            stickers.forEach(sticker => {
+              if (sticker.type === "ONY") {
+                ctx.save()
+                // Scale coordinates for higher resolution
+                const scaledX = sticker.x * scale
+                const scaledY = sticker.y * scale
+                const scaledSize = sticker.size * scale
+                
+                // Draw logo as watermark - fully opaque to cover grain underneath
+                ctx.globalAlpha = 1.0 // Fully opaque to cover grain
+                ctx.globalCompositeOperation = "source-over"
+                drawLogo(ctx, scaledX, scaledY, scaledSize / 100)
+                ctx.restore()
+              }
+
+              if (holoCtx) {
+                // Draw only the logo shape in white on the holo mask - clean sharp edges
+                holoCtx.save()
+                holoCtx.fillStyle = "white"
+                holoCtx.globalCompositeOperation = "source-over"
+                const scaledX = sticker.x * scale
+                const scaledY = sticker.y * scale
+                const scaledSize = sticker.size * scale
+                
+                // Clean sharp edges - no shadow blur, no white border
+                drawLogo(holoCtx, scaledX, scaledY, scaledSize / 100, "white")
+                holoCtx.restore()
+              }
+            })
+            
+            // Update textures after all drawing is complete
+            // Update for pages with stickers OR pattern page
+            if (stickers.length > 0 || (isPatternPage && !isBack)) {
+              const newTex = new THREE.CanvasTexture(canvas)
+              newTex.colorSpace = THREE.SRGBColorSpace
+              // High-quality filtering for crisp logos
+              newTex.minFilter = THREE.LinearFilter
+              newTex.magFilter = THREE.LinearFilter
+              newTex.generateMipmaps = false // Disable mipmaps for sharp logos
+              mat.map = newTex
+              if (holoCtx) {
+                const holoTex = new THREE.CanvasTexture(holoCanvas)
+                holoTex.colorSpace = THREE.SRGBColorSpace
+                holoTex.minFilter = THREE.LinearFilter
+                holoTex.magFilter = THREE.LinearFilter
+                holoTex.generateMipmaps = false
+                mat.iridescenceThicknessMap = holoTex
+                if (mat.userData.shader) {
+                  mat.userData.shader.uniforms.uHoloMap.value = holoTex
+                }
+              }
+              mat.needsUpdate = true
+            } else {
+              // Update texture for normal pages without stickers
+              const newTex = new THREE.CanvasTexture(canvas)
+              newTex.colorSpace = THREE.SRGBColorSpace
+              mat.map = newTex
+              mat.needsUpdate = true
+            }
+            
+            // Apply holo effect for pages with stickers OR pattern page
+            if (holoCtx && (stickers.length > 0 || (isPatternPage && !isBack))) {
+              const holoTex = new THREE.CanvasTexture(holoCanvas)
+              mat.iridescenceThicknessMap = holoTex
+              mat.iridescence = 1.0
+
+              // Custom holo shader (only if not halftone page)
+              if (!isHalftone) {
+                mat.onBeforeCompile = (shader) => {
+                  shader.uniforms.uTime = { value: 0 }
+                  shader.uniforms.uMouse = { value: new THREE.Vector2(0, 0) }
+                  shader.uniforms.uHoloMap = { value: mat.iridescenceThicknessMap }
+                  
+                  shader.fragmentShader = `
+                    uniform float uTime;
+                    uniform vec2 uMouse;
+                    uniform sampler2D uHoloMap;
+
+                    // Smoother spectral color approximation
+                    vec3 spectral_color(float w) {
+                      float r = smoothstep(400.0, 450.0, w) - smoothstep(550.0, 650.0, w);
+                      float g = smoothstep(450.0, 550.0, w) - smoothstep(600.0, 700.0, w);
+                      float b = smoothstep(400.0, 500.0, w) - smoothstep(500.0, 600.0, w);
+                      return clamp(vec3(r, g, b), 0.0, 1.0);
+                    }
+
+                    float hash(vec2 p) {
+                      return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+                    }
+
+                    ${shader.fragmentShader}
+                  `.replace(
+                    `#include <map_fragment>`,
+                    `
+                    #include <map_fragment>
+                    
+                    float holoMask = texture2D(uHoloMap, vMapUv).r;
+                    // Sharper mask edge for cleaner logo boundaries
+                    float holoMaskSmooth = smoothstep(0.02, 0.08, holoMask);
+                    
+                    if (holoMaskSmooth > 0.01) {
+                      vec3 viewDir = normalize(vViewPosition);
+                      vec3 normal = normalize(vNormal);
+                      float dotNV = dot(normal, viewDir);
+                      vec2 tilt = uMouse * 0.25;
+                      
+                      // Very smooth wavelength shift - no harsh transitions
+                      float shift = dotNV * 2.0 + (vMapUv.x - 0.5) * tilt.x * 6.0 + (vMapUv.y - 0.5) * tilt.y * 6.0;
+                      float wavelength = 400.0 + mod(shift * 70.0, 300.0);
+                      vec3 rainbow = spectral_color(wavelength);
+                      
+                      // Minimal sparkle - only subtle highlights, not noise
+                      float sparkleNoise = hash(vMapUv * 256.0 + uTime * 0.5); // Very low frequency
+                      float sparkle = pow(sparkleNoise, 80.0) * 1.5 * max(0.0, dot(normal, vec3(tilt, 1.0))) * holoMaskSmooth;
+                      
+                      // Clean foil effect - smooth rainbow with subtle highlights
+                      vec3 foil = rainbow * 0.4 + vec3(sparkle * 0.3) + vec3(pow(1.0 - abs(dotNV), 5.0) * 0.25);
+                      
+                      // Blend smoothly with original color
+                      diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb + foil, 0.6 * holoMaskSmooth);
+                      
+                      // Clean specular highlight - smooth and controlled
+                      float spec = pow(max(0.0, dot(reflect(-viewDir, normal), normalize(vec3(tilt, 1.0)))), 30.0);
+                      diffuseColor.rgb += spec * 0.35 * holoMaskSmooth;
+                    }
+                    `
+                  )
+                  mat.userData.shader = shader
+                }
+              }
+            }
+
             mat.needsUpdate = true
           }
 
           if (frontImgUrl) {
+            // Load front texture
+            const frontIsSpread = isFrontSpread
+            const frontSide = frontSpreadSide
             textureLoader.load(frontImgUrl, (tex) => {
-              handleTextureLoad(tex, matFront, false)
+              handleTextureLoad(tex, matFront, false, this.frontStickers, frontIsSpread, frontSide, isONYPatternPage, isHalftonePage)
               checkLoading()
             }, undefined, () => checkLoading())
-          } else { checkLoading() }
+          } else {
+            // No image URL - create empty texture for pattern page or use placeholder
+            if (isONYPatternPage) {
+              // For pattern page, create empty texture and draw pattern
+              const emptyTex = new THREE.Texture()
+              emptyTex.image = new Image()
+              emptyTex.image.width = 1024
+              emptyTex.image.height = 1536
+              handleTextureLoad(emptyTex, matFront, false, this.frontStickers, false, 'left', isONYPatternPage, isHalftonePage)
+            }
+            checkLoading()
+          }
 
           if (backImgUrl) {
+            // Load back texture  
+            const backIsSpread = isBackSpread
+            const backSide = backSpreadSide
             textureLoader.load(backImgUrl, (tex) => {
-              handleTextureLoad(tex, matBack, true)
+              handleTextureLoad(tex, matBack, true, this.backStickers, backIsSpread, backSide, isONYPatternPage, isHalftonePage)
               if (isBackCover) {
                 const canvas = matBack.map?.image as HTMLCanvasElement
                 if (canvas?.getContext) {
@@ -528,9 +922,22 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
 
         let flipProgress = progress >= flipPhaseStart && progress < flipPhaseEnd ? (progress - flipPhaseStart) / (flipPhaseEnd - flipPhaseStart) : progress >= flipPhaseEnd ? 1 : 0
         const pagesToFlip = flipProgress * pagesRef.current.length
+        
+        timeRef.current += 0.01
+
         pagesRef.current.forEach((page, i) => {
           const pageState = Math.max(0, Math.min(1, pagesToFlip - i))
           page.updateCurl(pageState)
+
+          // Update Holo Uniforms
+          const updateHolo = (mat: THREE.MeshPhysicalMaterial) => {
+            if (mat.userData.shader) {
+              mat.userData.shader.uniforms.uTime.value = timeRef.current
+              mat.userData.shader.uniforms.uMouse.value.set(mouseRef.current.x, mouseRef.current.y)
+            }
+          }
+          updateHolo(page.meshFront.material as THREE.MeshPhysicalMaterial)
+          updateHolo(page.meshBack.material as THREE.MeshPhysicalMaterial)
 
           // Update Halftone Size Animation
           if (page.halftoneUniforms) {
