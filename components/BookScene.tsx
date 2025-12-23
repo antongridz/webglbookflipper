@@ -139,6 +139,9 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       cameraRef.current = camera
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+      // Support retina/high DPI displays
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 3) // Cap at 3x for performance
+      renderer.setPixelRatio(pixelRatio)
       renderer.setSize(window.innerWidth, window.innerHeight)
       renderer.shadowMap.enabled = true
       renderer.shadowMap.type = THREE.PCFShadowMap
@@ -158,8 +161,10 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       const dirLight = new THREE.DirectionalLight(envPresets["Studio"].dir, config.lightIntensity)
       dirLight.position.set(config.lightX, config.lightY, config.lightZ)
       dirLight.castShadow = true
-      dirLight.shadow.mapSize.width = 1024
-      dirLight.shadow.mapSize.height = 1024
+      // Scale shadow map resolution for high DPI displays
+      const shadowMapSize = Math.floor(1024 * pixelRatio)
+      dirLight.shadow.mapSize.width = shadowMapSize
+      dirLight.shadow.mapSize.height = shadowMapSize
       dirLight.shadow.bias = -0.0001
       dirLight.shadow.normalBias = 0.005
       const d = 8
@@ -213,42 +218,56 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       }
 
       const createPlaceholderTexture = (number: number, color: string, isCover = false, isBack = false) => {
+        // Support retina/high DPI displays - higher base resolution for desktop
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 3)
+        // Higher base resolution for better desktop quality (1024x1536 base, scales with pixelRatio)
+        const baseWidth = 1024
+        const baseHeight = 1536
         const canvas = document.createElement("canvas")
-        canvas.width = 512
-        canvas.height = 768
+        canvas.width = baseWidth * pixelRatio
+        canvas.height = baseHeight * pixelRatio
         const ctx = canvas.getContext("2d")
         if (!ctx) return new THREE.CanvasTexture(canvas)
         const texture = new THREE.CanvasTexture(canvas)
         texture.colorSpace = THREE.SRGBColorSpace
         
+        // Scale context for high DPI
+        ctx.scale(pixelRatio, pixelRatio)
+        
         if (isBack) {
-          ctx.translate(canvas.width, 0)
+          ctx.translate(baseWidth, 0) // Use logical width, not canvas.width
           ctx.scale(-1, 1)
         }
 
+        // Enable high quality rendering
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = "high"
+        
         ctx.fillStyle = color
-        ctx.fillRect(0, 0, 512, 768)
+        ctx.fillRect(0, 0, baseWidth, baseHeight)
         if (isCover) {
           ctx.fillStyle = "black"
-          drawLogo(ctx, 256 - (96 * 1.5) / 2, 100, 1.5)
+          const centerX = baseWidth / 2
+          drawLogo(ctx, centerX - (96 * 1.5) / 2, 100, 1.5)
           ctx.font = "30px Helvetica, Arial"
           ctx.textAlign = "center"
-          ctx.fillText("2025", 256, 360)
+          ctx.fillText("2025", centerX, 360)
           ctx.font = "bold 16px Helvetica, Arial"
-          ctx.fillText("LIMITED EDITION", 256, 600)
+          ctx.fillText("LIMITED EDITION", centerX, 600)
         } else {
           ctx.fillStyle = "#333"
           ctx.font = "bold 140px Helvetica, Arial"
           ctx.textAlign = "center"
           ctx.textBaseline = "middle"
-          ctx.fillText(number.toString(), 256, 384)
+          ctx.fillText(number.toString(), baseWidth / 2, baseHeight / 2)
         }
         const spineGradient = ctx.createLinearGradient(0, 0, 40, 0)
         spineGradient.addColorStop(0, "rgba(0,0,0,0.15)")
         spineGradient.addColorStop(1, "rgba(0,0,0,0)")
         ctx.fillStyle = spineGradient
-        ctx.fillRect(0, 0, 512, 768)
-        const imageData = ctx.getImageData(0, 0, 512, 768)
+        ctx.fillRect(0, 0, baseWidth, baseHeight)
+        // Get image data at actual canvas resolution (scaled)
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
         const data = imageData.data
         for (let i = 0; i < data.length; i += 4) {
           const noise = (Math.random() - 0.5) * 5
@@ -439,11 +458,16 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
           })
 
           const handleTextureLoad = (tex: THREE.Texture, mat: THREE.MeshPhysicalMaterial, isBack = false, stickers: any[] = [], isSpread = false, spreadSide: 'left' | 'right' = 'left', isPatternPage = false, isHalftone = false) => {
-            // Much higher resolution for better quality, especially for logos
-            const scale = stickers.length > 0 ? 4 : 1 // 4x resolution for crisp logos
+            // Support retina/high DPI displays - scale canvas resolution based on device pixel ratio
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 3) // Cap at 3x for performance
+            // Higher base resolution for desktop screens (2048x3072), scales up for high DPI and stickers
+            const baseWidth = 2048
+            const baseHeight = 3072
+            const stickerScale = stickers.length > 0 ? 1.5 : 1 // Additional scale for stickers
+            const scale = Math.max(pixelRatio * stickerScale, 1) // Ensure at least 1x
             const canvas = document.createElement("canvas")
-            canvas.width = 1024 * scale
-            canvas.height = 1536 * scale
+            canvas.width = baseWidth * scale
+            canvas.height = baseHeight * scale
             const ctx = canvas.getContext("2d")
             if (!ctx) return
             
@@ -963,6 +987,9 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
         aspect = window.innerWidth / window.innerHeight
         camera.aspect = aspect
         camera.updateProjectionMatrix()
+        // Update pixel ratio on resize (in case user changes display or zooms)
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 3)
+        renderer.setPixelRatio(pixelRatio)
         renderer.setSize(window.innerWidth, window.innerHeight)
       }
       window.addEventListener("resize", handleResize)
