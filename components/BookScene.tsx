@@ -26,7 +26,8 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
   // Loading state tracking
   const loadingRef = useRef({
     total: 0,
-    loaded: 0
+    loaded: 0,
+    timeoutId: null as NodeJS.Timeout | null
   })
 
   const checkLoading = () => {
@@ -35,6 +36,11 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
     onProgress?.(percentage)
     
     if (loadingRef.current.loaded >= loadingRef.current.total) {
+      // Clear timeout if all loaded
+      if (loadingRef.current.timeoutId) {
+        clearTimeout(loadingRef.current.timeoutId)
+        loadingRef.current.timeoutId = null
+      }
       setTimeout(() => onLoad?.(), 600)
     }
   }
@@ -86,9 +92,24 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
 
       if (!mounted || !mountRef.current) return
 
+      // Detect mobile device once for optimization (used throughout the function)
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768
+
       loadingRef.current.total = config.pageCount * 2
       loadingRef.current.loaded = 0
       onProgress?.(0)
+      
+      // Set timeout to prevent infinite loading (30 seconds for mobile, 60 for desktop)
+      const timeoutDuration = isMobile ? 30000 : 60000
+      loadingRef.current.timeoutId = setTimeout(() => {
+        if (loadingRef.current.loaded < loadingRef.current.total) {
+          console.warn(`Loading timeout after ${timeoutDuration}ms. Loaded ${loadingRef.current.loaded}/${loadingRef.current.total}`)
+          // Force completion to prevent hanging
+          loadingRef.current.loaded = loadingRef.current.total
+          onProgress?.(100)
+          setTimeout(() => onLoad?.(), 100)
+        }
+      }, timeoutDuration)
 
       const imageUrls = [
         "/pages/1.webp",
@@ -139,8 +160,9 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       cameraRef.current = camera
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-      // Support retina/high DPI displays
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 3) // Cap at 3x for performance
+      // Support retina/high DPI displays - lower cap for mobile devices
+      const maxPixelRatio = isMobile ? 2 : 3 // Cap at 2x for mobile, 3x for desktop
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
       renderer.setPixelRatio(pixelRatio)
       renderer.setSize(window.innerWidth, window.innerHeight)
       renderer.shadowMap.enabled = true
@@ -218,11 +240,12 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       }
 
       const createPlaceholderTexture = (number: number, color: string, isCover = false, isBack = false) => {
-        // Support retina/high DPI displays - higher base resolution for desktop
-        const pixelRatio = Math.min(window.devicePixelRatio || 1, 3)
-        // Higher base resolution for better desktop quality (1024x1536 base, scales with pixelRatio)
-        const baseWidth = 1024
-        const baseHeight = 1536
+        // Support retina/high DPI displays - lower cap for mobile devices (isMobile defined in outer scope)
+        const maxPixelRatio = isMobile ? 2 : 3
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
+        // Adaptive base resolution: lower for mobile
+        const baseWidth = isMobile ? 512 : 1024
+        const baseHeight = isMobile ? 768 : 1536
         const canvas = document.createElement("canvas")
         canvas.width = baseWidth * pixelRatio
         canvas.height = baseHeight * pixelRatio
@@ -458,12 +481,14 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
           })
 
           const handleTextureLoad = (tex: THREE.Texture, mat: THREE.MeshPhysicalMaterial, isBack = false, stickers: any[] = [], isSpread = false, spreadSide: 'left' | 'right' = 'left', isPatternPage = false, isHalftone = false) => {
-            // Support retina/high DPI displays - scale canvas resolution based on device pixel ratio
-            const pixelRatio = Math.min(window.devicePixelRatio || 1, 3) // Cap at 3x for performance
-            // Higher base resolution for desktop screens (2048x3072), scales up for high DPI and stickers
-            const baseWidth = 2048
-            const baseHeight = 3072
-            const stickerScale = stickers.length > 0 ? 1.5 : 1 // Additional scale for stickers
+            // Support retina/high DPI displays - lower cap for mobile devices (isMobile defined in outer scope)
+            const maxPixelRatio = isMobile ? 2 : 3 // Cap at 2x for mobile, 3x for desktop
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
+            // Adaptive base resolution: lower for mobile to save memory
+            const baseWidth = isMobile ? 1024 : 2048
+            const baseHeight = isMobile ? 1536 : 3072
+            // Reduced sticker scale for mobile
+            const stickerScale = stickers.length > 0 ? (isMobile ? 1.2 : 1.5) : 1
             const scale = Math.max(pixelRatio * stickerScale, 1) // Ensure at least 1x
             const canvas = document.createElement("canvas")
             canvas.width = baseWidth * scale
@@ -795,13 +820,26 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
           }
 
           if (frontImgUrl) {
-            // Load front texture
+            // Load front texture with error handling
             const frontIsSpread = isFrontSpread
             const frontSide = frontSpreadSide
-            textureLoader.load(frontImgUrl, (tex) => {
-              handleTextureLoad(tex, matFront, false, this.frontStickers, frontIsSpread, frontSide, isONYPatternPage, isHalftonePage)
-              checkLoading()
-            }, undefined, () => checkLoading())
+            textureLoader.load(
+              frontImgUrl, 
+              (tex) => {
+                try {
+                  handleTextureLoad(tex, matFront, false, this.frontStickers, frontIsSpread, frontSide, isONYPatternPage, isHalftonePage)
+                  checkLoading()
+                } catch (error) {
+                  console.error(`Error processing front texture for page ${this.index}:`, error)
+                  checkLoading() // Still count as loaded to prevent hanging
+                }
+              }, 
+              undefined, 
+              (error) => {
+                console.error(`Error loading front texture for page ${this.index}:`, error)
+                checkLoading() // Count as loaded to prevent hanging
+              }
+            )
           } else {
             // No image URL - create empty texture for pattern page or use placeholder
             if (isONYPatternPage) {
@@ -816,21 +854,34 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
           }
 
           if (backImgUrl) {
-            // Load back texture  
+            // Load back texture with error handling
             const backIsSpread = isBackSpread
             const backSide = backSpreadSide
-            textureLoader.load(backImgUrl, (tex) => {
-              handleTextureLoad(tex, matBack, true, this.backStickers, backIsSpread, backSide, isONYPatternPage, isHalftonePage)
-              if (isBackCover) {
-                const canvas = matBack.map?.image as HTMLCanvasElement
-                if (canvas?.getContext) {
-                  const ctx = canvas.getContext("2d")
-                  if (ctx) drawLogo(ctx, canvas.width / 2 - (96 * 2) / 2, 150, 2)
-                  matBack.map!.needsUpdate = true
+            textureLoader.load(
+              backImgUrl, 
+              (tex) => {
+                try {
+                  handleTextureLoad(tex, matBack, true, this.backStickers, backIsSpread, backSide, isONYPatternPage, isHalftonePage)
+                  if (isBackCover) {
+                    const canvas = matBack.map?.image as HTMLCanvasElement
+                    if (canvas?.getContext) {
+                      const ctx = canvas.getContext("2d")
+                      if (ctx) drawLogo(ctx, canvas.width / 2 - (96 * 2) / 2, 150, 2)
+                      matBack.map!.needsUpdate = true
+                    }
+                  }
+                  checkLoading()
+                } catch (error) {
+                  console.error(`Error processing back texture for page ${this.index}:`, error)
+                  checkLoading() // Still count as loaded to prevent hanging
                 }
+              }, 
+              undefined, 
+              (error) => {
+                console.error(`Error loading back texture for page ${this.index}:`, error)
+                checkLoading() // Count as loaded to prevent hanging
               }
-              checkLoading()
-            }, undefined, () => checkLoading())
+            )
           } else { 
             if (isBackCover) {
               const canvas = matBack.map?.image as HTMLCanvasElement
@@ -988,13 +1039,21 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
         camera.aspect = aspect
         camera.updateProjectionMatrix()
         // Update pixel ratio on resize (in case user changes display or zooms)
-        const pixelRatio = Math.min(window.devicePixelRatio || 1, 3)
+        // Re-detect mobile on resize as window size may have changed
+        const isMobileNow = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768
+        const maxPixelRatio = isMobileNow ? 2 : 3
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
         renderer.setPixelRatio(pixelRatio)
         renderer.setSize(window.innerWidth, window.innerHeight)
       }
       window.addEventListener("resize", handleResize)
 
       cleanup = () => {
+        // Clear loading timeout
+        if (loadingRef.current.timeoutId) {
+          clearTimeout(loadingRef.current.timeoutId)
+          loadingRef.current.timeoutId = null
+        }
         window.removeEventListener("mousemove", handleMouseMove)
         window.removeEventListener("resize", handleResize)
         cancelAnimationFrame(reqId)
