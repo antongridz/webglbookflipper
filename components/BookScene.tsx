@@ -159,9 +159,9 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       camera.lookAt(0, 0, 0)
       cameraRef.current = camera
 
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-      // Support retina/high DPI displays - lower cap for mobile devices
-      const maxPixelRatio = isMobile ? 2 : 3 // Cap at 2x for mobile, 3x for desktop
+      const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: true }) // Disable antialiasing on mobile for performance
+      // Aggressive mobile optimization - much lower pixel ratio
+      const maxPixelRatio = isMobile ? 1.5 : 3 // Cap at 1.5x for mobile (was 2x), 3x for desktop
       const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
       renderer.setPixelRatio(pixelRatio)
       renderer.setSize(window.innerWidth, window.innerHeight)
@@ -240,12 +240,12 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
       }
 
       const createPlaceholderTexture = (number: number, color: string, isCover = false, isBack = false) => {
-        // Support retina/high DPI displays - lower cap for mobile devices (isMobile defined in outer scope)
-        const maxPixelRatio = isMobile ? 2 : 3
+        // Aggressive mobile optimization - much lower resolution
+        const maxPixelRatio = isMobile ? 1.5 : 3
         const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
-        // Adaptive base resolution: lower for mobile
-        const baseWidth = isMobile ? 512 : 1024
-        const baseHeight = isMobile ? 768 : 1536
+        // Much lower base resolution for mobile to prevent crashes
+        const baseWidth = isMobile ? 256 : 1024
+        const baseHeight = isMobile ? 384 : 1536
         const canvas = document.createElement("canvas")
         canvas.width = baseWidth * pixelRatio
         canvas.height = baseHeight * pixelRatio
@@ -481,14 +481,14 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
           })
 
           const handleTextureLoad = (tex: THREE.Texture, mat: THREE.MeshPhysicalMaterial, isBack = false, stickers: any[] = [], isSpread = false, spreadSide: 'left' | 'right' = 'left', isPatternPage = false, isHalftone = false) => {
-            // Support retina/high DPI displays - lower cap for mobile devices (isMobile defined in outer scope)
-            const maxPixelRatio = isMobile ? 2 : 3 // Cap at 2x for mobile, 3x for desktop
+            // Aggressive mobile optimization to prevent memory issues
+            const maxPixelRatio = isMobile ? 1.5 : 3 // Much lower cap for mobile (1.5x instead of 2x)
             const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
-            // Adaptive base resolution: lower for mobile to save memory
-            const baseWidth = isMobile ? 1024 : 2048
-            const baseHeight = isMobile ? 1536 : 3072
-            // Reduced sticker scale for mobile
-            const stickerScale = stickers.length > 0 ? (isMobile ? 1.2 : 1.5) : 1
+            // Much lower base resolution for mobile to prevent crashes
+            const baseWidth = isMobile ? 512 : 2048
+            const baseHeight = isMobile ? 768 : 3072
+            // No additional sticker scale for mobile to save memory
+            const stickerScale = stickers.length > 0 ? (isMobile ? 1 : 1.5) : 1
             const scale = Math.max(pixelRatio * stickerScale, 1) // Ensure at least 1x
             const canvas = document.createElement("canvas")
             canvas.width = baseWidth * scale
@@ -500,16 +500,21 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
             ctx.imageSmoothingEnabled = true
             ctx.imageSmoothingQuality = "high"
             
-            // Holo Mask Canvas (same high resolution)
-            const holoCanvas = document.createElement("canvas")
-            holoCanvas.width = 1024 * scale
-            holoCanvas.height = 1536 * scale
-            const holoCtx = holoCanvas.getContext("2d")
-            if (holoCtx) {
-              holoCtx.fillStyle = "black"
-              holoCtx.fillRect(0, 0, holoCanvas.width, holoCanvas.height)
-              holoCtx.imageSmoothingEnabled = true
-              holoCtx.imageSmoothingQuality = "high"
+            // Holo Mask Canvas - much smaller for mobile or disabled
+            let holoCanvas: HTMLCanvasElement | null = null
+            let holoCtx: CanvasRenderingContext2D | null = null
+            if (!isMobile || (stickers.length > 0 || isPatternPage)) {
+              // Only create holo canvas for desktop or when needed
+              holoCanvas = document.createElement("canvas")
+              holoCanvas.width = isMobile ? 512 * scale : 1024 * scale
+              holoCanvas.height = isMobile ? 768 * scale : 1536 * scale
+              holoCtx = holoCanvas.getContext("2d")
+              if (holoCtx) {
+                holoCtx.fillStyle = "black"
+                holoCtx.fillRect(0, 0, holoCanvas.width, holoCanvas.height)
+                holoCtx.imageSmoothingEnabled = true
+                holoCtx.imageSmoothingQuality = "high"
+              }
             }
 
             if (isBack) {
@@ -724,7 +729,7 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
               newTex.magFilter = THREE.LinearFilter
               newTex.generateMipmaps = false // Disable mipmaps for sharp logos
               mat.map = newTex
-              if (holoCtx) {
+              if (holoCtx && holoCanvas) {
                 const holoTex = new THREE.CanvasTexture(holoCanvas)
                 holoTex.colorSpace = THREE.SRGBColorSpace
                 holoTex.minFilter = THREE.LinearFilter
@@ -744,8 +749,8 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
               mat.needsUpdate = true
             }
             
-            // Apply holo effect for pages with stickers OR pattern page
-            if (holoCtx && (stickers.length > 0 || (isPatternPage && !isBack))) {
+            // Apply holo effect for pages with stickers OR pattern page (only if holoCanvas exists)
+            if (holoCtx && holoCanvas && (stickers.length > 0 || (isPatternPage && !isBack))) {
               const holoTex = new THREE.CanvasTexture(holoCanvas)
               mat.iridescenceThicknessMap = holoTex
               mat.iridescence = 1.0
@@ -1041,7 +1046,7 @@ const BookScene: React.FC<BookSceneProps> = ({ config, onLoad, onProgress }) => 
         // Update pixel ratio on resize (in case user changes display or zooms)
         // Re-detect mobile on resize as window size may have changed
         const isMobileNow = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768
-        const maxPixelRatio = isMobileNow ? 2 : 3
+        const maxPixelRatio = isMobileNow ? 1.5 : 3 // Match aggressive mobile optimization
         const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio)
         renderer.setPixelRatio(pixelRatio)
         renderer.setSize(window.innerWidth, window.innerHeight)
